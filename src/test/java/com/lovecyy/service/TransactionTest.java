@@ -444,7 +444,7 @@ String hash="0100000001ce65cf4e28dbc3ecf05977913a5afbdf42fe8f270b58752a149b88f83
      * 测试多签交易
      * 多签 => PKP2H-P2WPKH
      */
-    //TODO 失败 non-mandatory-script-verify-flag (Dummy CHECKMULTISIG argument must be zero) (code 64) because of 参数不正确 我此时应该是因为赎回脚本不正确
+    //TODO 失败 non-mandatory-script-verify-flag (Dummy CHECKMULTISIG argument must be zero) (code 64) because of 参数不正确 因为赎回脚本 参数不正确
     @DisplayName("MultiSignTOP2PKHP2WPKH")
     @Test
     public void MultiSign_TO_P2PKH_P2WPKH(){
@@ -506,7 +506,7 @@ String hash="0100000001ce65cf4e28dbc3ecf05977913a5afbdf42fe8f270b58752a149b88f83
         //这里模拟第二个人在其他地方对这笔交易签名
         //从十六进制的文本交易还原交易
         transaction=new Transaction(networkParameters,Converter.hexToByte(transactionHex));
-        //签名
+        //签名 若M为1 则不需要
         transactionUtils.signMultiSigTransaction(networkParameters,transaction,null,ecKeyMultiSigB,false);
            /*System.out.println("Second sign:");
         i = 0;
@@ -562,7 +562,7 @@ String hash="0100000001ce65cf4e28dbc3ecf05977913a5afbdf42fe8f270b58752a149b88f83
         changeMoney = totalInputMoney - totalOutMoney-chargeMoney;
         Map<String, Double> receiveAddressAndValue = new HashMap<>();
         receiveAddressAndValue.put(a1Main.getAddress(),accountAMoney);
-        receiveAddressAndValue.put(segWit1Address.getAddress(),accountAMoney);
+        receiveAddressAndValue.put(multiSigAccountA2.getAddress().toBase58(),accountBMoney);
         if (changeMoney>0){
             receiveAddressAndValue.put(multiSigAccountA.getAddress().toBase58(),changeMoney);
         }
@@ -585,12 +585,105 @@ String hash="0100000001ce65cf4e28dbc3ecf05977913a5afbdf42fe8f270b58752a149b88f83
             System.out.println(Hex.encode(signature.encodeToDER()));
             signatureData.getSignatures().add(signature);
         }
-        ECKey ecKeyMultiSigB = addressUtils.getECKeyFromPrivateKeyWif(networkParameters, "cNQ3zWKgA66rNAJAAJfVhZ6wKp6Fg2CHCFN2WXw26nuLkPYZQqTP");
+  //      ECKey ecKeyMultiSigB = addressUtils.getECKeyFromPrivateKeyWif(networkParameters, "cNQ3zWKgA66rNAJAAJfVhZ6wKp6Fg2CHCFN2WXw26nuLkPYZQqTP");
+
+//        //模拟用户B签名
+//        for(SignatureData signatureData:signatureDataList) {
+//            ECKey.ECDSASignature signature = transactionUtils.sign(ecKeyMultiSigB, signatureData.getSimplifiedTransactionHash());
+//            System.out.println(HEX.encode(signature.encodeToDER()));
+//            signatureData.getSignatures().add(signature);
+//        }
+        //添加进行交易
+        for (SignatureData signatureData : signatureDataList) {
+            transactionUtils.addMultiSignatures(transaction,signatureData.getInputIndex(),signatureData.getSignatures(),redeemScript);
+        }
+        String transactionHex = Hex.toHexString(transaction.bitcoinSerialize());
+        //预估交易hash
+        String txId = transaction.getTxId().toString();
+        System.out.println(transactionHex);
+        System.out.println(txId);
+        Object o = btcService.sendrawTransaction(transactionHex);
+        System.out.println("结果=>"+o);
+
+
+    }
+
+    /**
+     * M-N 2-3  至少M个签名 可以自由组合
+     * 参考: https://blog.csdn.net/qq_40452317/article/details/90412806
+     */
+    @DisplayName("多签转账")
+    @Test
+    public void MultiSign2_TO_P2PKH_P2WPKH2(){
+
+        Double accountAMoney=0.00001;
+        Double accountBMoney=0.00001;
+        Double totalInputMoney=0D;
+        Double totalOutMoney=accountAMoney+accountBMoney;
+        //手续费
+        Double chargeMoney=Converter.satoshisToBitcoin(701L);
+        Double changeMoney=0D;
+
+        LegacyAddress legacyAddress = multiSigAccountA2.getAddress();
+        String address = legacyAddress.toBase58();
+        System.out.println(address);
+        List<UnspentTransaction> unspentTransactions = btcService.listUtxo(0, 9999999, new String[]{address});
+        System.out.println(unspentTransactions);
+        List<UTXO> utxoKeys=new ArrayList<>();
+        for (UnspentTransaction unspentTransaction : unspentTransactions) {
+            if (totalInputMoney>=totalOutMoney){
+                break;
+            }
+            UTXO utxo = new UTXO(
+                    Sha256Hash.wrap(unspentTransaction.getTxid()),
+                    unspentTransaction.getVout(),
+                    Coin.valueOf(Converter.bitcoinToSatoshis(unspentTransaction.getAmount().doubleValue())),
+                    0,
+                    false,
+                    new Script(Hex.decode(unspentTransaction.getScriptPubKey()))
+            );
+            utxoKeys.add(utxo);
+            totalInputMoney+=unspentTransaction.getAmount().doubleValue();
+        }
+        changeMoney = totalInputMoney - totalOutMoney-chargeMoney;
+        Map<String, Double> receiveAddressAndValue = new HashMap<>();
+        receiveAddressAndValue.put(a1Main.getAddress(),accountAMoney);
+        receiveAddressAndValue.put(multiSigAccountA.getAddress().toBase58(),accountBMoney);
+        if (changeMoney>0){
+            receiveAddressAndValue.put(multiSigAccountA2.getAddress().toBase58(),changeMoney);
+        }
+        //构建交易
+        Transaction transaction = transactionUtils.buildTransaction(networkParameters, utxoKeys, receiveAddressAndValue);
+        //赎回脚本
+        Script redeemScript = multiSigAccountA2.getRedeemScript();
+        //获取待签名数据
+        List<SignatureData> signatureDataList = transactionUtils.getSimplifiedTransactionHashes(transaction, redeemScript);
+        System.out.println(signatureDataList);
+        //模拟用户签名后上传的签名数据
+//        String SignatureAInput0="3045022100f2c56653808f231ed5f4f7f92bab9d4884557b9823f311221f06d556cb0c612202204338d44a1fe284fda10a593a1e902f2b7967d46ce908b4624ce31e02e2700dfc";
+//        String SignatureAInput1="3044022056c5508a8f5ba6fb2a099ab3fa58c00abb770e8e3c4f48a2874055c26eeb32ae02205f86e7db1618c1c1422c910585aa74fd132f9dc5cc66de6b3f7e1f0d17121f6b";
+//        String SignatureBInput0="3045022100c3bf2f9f00a21e31bb83abcb78c9203e57fbf9523bf435ae5c0c4b0a9c8b6ba102201e2fcc1f61bc4d85c82067123fcfbba98ebbebb25dd15b9abca0ed7d8caae6a3";
+//        String SignatureBInput1="304402203e87eea89d3ce11e92401049b8c845c1eabd2e7556447ae9b64c94670d2959b5022041967578a6a6fa407293b8b46b24b31dc3e03950c6c16f3ea169fe80496f0d24";
+        //模拟A用户签名
+        ECKey ecKeyMultiSigA = addressUtils.getECKeyFromPrivateKeyWif(networkParameters, "cRzsYxircLjYotcxdYfu99sQWKEHDdBiUqZczkMhHbcLJPfnn7rv");
+        for (SignatureData signatureData : signatureDataList) {
+            ECKey.ECDSASignature signature = transactionUtils.sign(ecKeyMultiSigA, signatureData.getSimplifiedTransactionHash());
+           // System.out.println(Hex.encode(signature.encodeToDER()));
+            signatureData.getSignatures().add(signature);
+        }
+        ECKey ecKeyMultiSigB = addressUtils.getECKeyFromPrivateKeyWif(networkParameters, "cRttDzjDk62LqFo2Y9GvgRSi3yYcqwrkA6kvcysUaTQGQFqTNNja");
 
         //模拟用户B签名
+//        for(SignatureData signatureData:signatureDataList) {
+//            ECKey.ECDSASignature signature = transactionUtils.sign(ecKeyMultiSigB, signatureData.getSimplifiedTransactionHash());
+//            //System.out.println(HEX.encode(signature.encodeToDER()));
+//            signatureData.getSignatures().add(signature);
+//        }
+        ECKey ecKeyMultiSigC = addressUtils.getECKeyFromPrivateKeyWif(networkParameters, "cTQGcsJyCNqZKwph87YqFi6F1qiCuNBzpdac2vHa7mCWkknEVcQP");
+        //模拟用户C签名
         for(SignatureData signatureData:signatureDataList) {
             ECKey.ECDSASignature signature = transactionUtils.sign(ecKeyMultiSigB, signatureData.getSimplifiedTransactionHash());
-            System.out.println(HEX.encode(signature.encodeToDER()));
+            //System.out.println(HEX.encode(signature.encodeToDER()));
             signatureData.getSignatures().add(signature);
         }
         //添加进行交易
@@ -605,8 +698,8 @@ String hash="0100000001ce65cf4e28dbc3ecf05977913a5afbdf42fe8f270b58752a149b88f83
         Object o = btcService.sendrawTransaction(transactionHex);
         System.out.println("结果=>"+o);
 
-    }
 
+    }
 
     /**
      * 测试签名 效验简单交易hash
