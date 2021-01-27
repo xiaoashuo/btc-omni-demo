@@ -78,6 +78,7 @@ public class TransactionUtils {
         transactionInput.clearScriptBytes();
     }
 
+
     /**
      * 签名Legacy(遗留、常规)转账交易，包含P2PK,P2PKH,P2SH
      *

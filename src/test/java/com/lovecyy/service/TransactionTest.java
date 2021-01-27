@@ -14,6 +14,7 @@ import com.lovecyy.utils.TransactionUtils;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.bitcoinj.core.*;
+import org.bitcoinj.crypto.TransactionSignature;
 import org.bitcoinj.params.TestNet3Params;
 import org.bitcoinj.script.Script;
 import org.bitcoinj.script.ScriptBuilder;
@@ -27,6 +28,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.util.Assert;
 
+import java.math.BigDecimal;
 import java.util.*;
 
 import static org.bitcoinj.core.Utils.HEX;
@@ -258,6 +260,7 @@ public class TransactionTest {
 
         System.out.println(utxos);
         Transaction transaction = transactionUtils.buildLegacyTransactionWithSigners(networkParameters, utxos, receiveAddressAndValue);
+
         byte[] rawTransactionHex =transaction.bitcoinSerialize();
         //交易hash
         String hash = Hex.toHexString(transaction.bitcoinSerialize());
@@ -721,6 +724,195 @@ String hash="0100000001ce65cf4e28dbc3ecf05977913a5afbdf42fe8f270b58752a149b88f83
 
 
 
+
+    @Test
+    public void testOmniTransfer(){
+        //这是比特币的限制最小转账金额，所以很多usdt转账会收到一笔0.00000546的btc
+        BigDecimal miniBtc=BigDecimal.valueOf(546L);
+        ECKey ecA1Main = ECKey.fromPrivate(Hex.decode(a1Main.getPrivateKey()));
+        //手续费
+        BigDecimal fee=BigDecimal.valueOf(546L);
+        //usdt数量
+        BigDecimal usdtAmount = BigDecimal.valueOf(1).multiply(BigDecimal.TEN.pow(8));
+        //构建usdt的输出脚本 注意这里的金额是要乘10的8次方
+        String usdtHex = "6a146f6d6e69" + String.format("%016x", 1) + String.format("%016x", usdtAmount.longValue());
+        //1.构建交易
+        Transaction tx = new Transaction(networkParameters);
+        //2.添加btc最小转账金额
+        tx.addOutput(Coin.valueOf(miniBtc.longValue()),Address.fromString(networkParameters,multiSigAccountA.getAddress().toBase58()));
+        //3.添加usdt转账
+        tx.addOutput(Coin.valueOf(0L), new Script(Utils.HEX.decode(usdtHex)));
+        //4.获取未花费输出
+        List<UnspentTransaction> unspentTransactions = btcService.listUtxo(1, 99999, new String[]{a1Main.getAddress()});
+        BigDecimal totalInputMoney=BigDecimal.ZERO;
+        //总输出聪
+        BigDecimal totalOutputMoney=fee.add(miniBtc);
+        BigDecimal totalOutPutMoneyBtc = totalOutputMoney.divide(BigDecimal.TEN.pow(8));
+        List<UTXO> needUtxos=new ArrayList<>();
+        for (UnspentTransaction unspentTransaction : unspentTransactions) {
+            if (totalInputMoney.compareTo(totalOutPutMoneyBtc)>=0){
+                break;
+            }
+            UTXO utxo = new UTXO(
+                    Sha256Hash.wrap(unspentTransaction.getTxid()),
+                    unspentTransaction.getVout(),
+                    Coin.valueOf(Converter.bitcoinToSatoshis(unspentTransaction.getAmount().doubleValue())),
+                    0,
+                    false,
+                    new Script(Hex.decode(unspentTransaction.getScriptPubKey()))
+            );
+            needUtxos.add(utxo);
+            totalInputMoney=totalInputMoney.add(unspentTransaction.getAmount());
+        }
+        //找零 聪单位
+        BigDecimal changeAmount = totalInputMoney.subtract(totalOutPutMoneyBtc);
+        //4.判断
+        if (changeAmount.compareTo(BigDecimal.ZERO)>0){
+            BigDecimal changeAmountSatoshis = changeAmount.multiply(BigDecimal.TEN.pow(8));
+            tx.addOutput(Coin.valueOf(changeAmountSatoshis.longValue()),Address.fromString(networkParameters,a1Main.getAddress()));
+        }
+        //5.添加未签名的输入
+        for (UTXO needUtxo : needUtxos) {
+            TransactionOutPoint transactionOutPoint = new TransactionOutPoint(networkParameters, needUtxo.getIndex(), needUtxo.getHash());
+            tx.addSignedInput(transactionOutPoint,needUtxo.getScript(),ecA1Main,Transaction.SigHash.ALL,true);
+        }
+//        for (UTXO needUtxo : needUtxos) {
+//            tx.addInput(needUtxo.getHash(),needUtxo.getIndex(),needUtxo.getScript());
+//
+//        }
+//        for (int i = 0; i < needUtxos.size(); i++) {
+//            UTXO utxo = needUtxos.get(i);
+//
+//            TransactionInput transactionInput = tx.getInput(i);
+//            Script scriptPubKey = ScriptBuilder.createOutputScript(Address.fromString(networkParameters, a1Main.getAddress()));
+//            Sha256Hash hash = tx.hashForSignature(i, scriptPubKey, Transaction.SigHash.ALL, false);
+//            ECKey.ECDSASignature ecSig = ecA1Main.sign(hash);
+//            TransactionSignature txSig = new TransactionSignature(ecSig, Transaction.SigHash.ALL, false);
+//            transactionInput.setScriptSig(ScriptBuilder.createInputScript(txSig, ecA1Main));
+//        }
+
+
+
+        //交易hahs
+        String hash = Hex.toHexString(tx.bitcoinSerialize());
+        //交易id
+        String txId = tx.getTxId().toString();
+        System.out.println(hash);
+
+        Object o = btcService.sendrawTransaction(hash);
+        System.out.println("结果=>"+o);
+    }
+
+    /**
+     * 发送omni交易 指定用户
+     */
+    @Test
+    public void sendOmniTransferBySpecificUserFee(){
+
+        //token的唯一标识
+        Integer propertyId=31;
+        Long amount=1L;
+        // 接收usdt 地址
+        String receiveUsdtAddress="";
+        // 私钥支付usdt key
+        String privUsdtKey=a1Main.getPrivateKey();
+        // 支付 USDT地址
+        String usdtAddress=a1Main.getAddress();
+        // 支付矿工费地址
+        String  btcAddress="";
+        //支付矿工费私钥
+        String btcPrivateKey="";
+        //手续费
+        Double fee=Converter.satoshisToBitcoin(546L);
+        //btc total money
+        long btcTotalMoney=0;
+        long usdtTotalMoney=0;
+
+
+        List<UnspentTransaction> btcUnspentList = btcService.listUtxo(1, 999999, new String[]{btcAddress});
+        List<UnspentTransaction> usdtUnspentList = btcService.listUtxo(1, 99999, new String[]{usdtAddress});
+        //btc未花费的输出
+        List<UTXO> btcUtxos=new ArrayList<>();
+        //usdt 未花费的输出
+        List<UTXO> usdtUtxos=new ArrayList<>();
+        for (UnspentTransaction unspentTransaction : btcUnspentList) {
+            if (btcTotalMoney>=(Converter.satoshisToBitcoin(1092L)+fee)){
+                break;
+            }
+            UTXO utxo = new UTXO(
+                    Sha256Hash.wrap(unspentTransaction.getTxid()),
+                    unspentTransaction.getVout(),
+                    Coin.valueOf(Converter.bitcoinToSatoshis(unspentTransaction.getAmount().doubleValue())),
+                    0,
+                    false,
+                    new Script(Hex.decode(unspentTransaction.getScriptPubKey()))
+            );
+            btcUtxos.add(utxo);
+            btcTotalMoney+=unspentTransaction.getAmount().longValue();
+        }
+        //usdt
+        for (UnspentTransaction unspentTransaction : usdtUnspentList) {
+            if (usdtTotalMoney>=Converter.satoshisToBitcoin(546L)){
+                break;
+            }
+            UTXO utxo = new UTXO(
+                    Sha256Hash.wrap(unspentTransaction.getTxid()),
+                    unspentTransaction.getVout(),
+                    Coin.valueOf(Converter.bitcoinToSatoshis(unspentTransaction.getAmount().doubleValue())),
+                    0,
+                    false,
+                    new Script(Hex.decode(unspentTransaction.getScriptPubKey()))
+            );
+            usdtUtxos.add(utxo);
+            usdtTotalMoney+=unspentTransaction.getAmount().longValue();
+        }
+
+        //判断是否为空
+        if (!btcUtxos.isEmpty()&&!usdtUtxos.isEmpty()){
+            //find a btc eckey info
+            DumpedPrivateKey btcPrivateKeyDump = DumpedPrivateKey.fromBase58(networkParameters, btcPrivateKey);
+            ECKey btcKey = btcPrivateKeyDump.getKey();
+            //a usdt eckey info
+            DumpedPrivateKey usdtDumpedPrivateKey = DumpedPrivateKey.fromBase58(networkParameters, privUsdtKey);
+            ECKey usdtKey = usdtDumpedPrivateKey.getKey();
+            //receive address
+            Address receiveAddress = Address.fromString(networkParameters, receiveUsdtAddress);
+            Transaction transaction = new Transaction(networkParameters);
+            //odd address
+            Address oddAddress = Address.fromString(networkParameters, btcAddress);
+            //如果需要找零 消费列表总金额-已经转账总金额-手续费
+            //总输入-手续费--546-546=找零金额
+            long leave= (long) (btcTotalMoney+usdtTotalMoney-fee-Converter.satoshisToBitcoin(1092L));
+            if (leave>0){
+                transaction.addOutput(Coin.valueOf(Converter.bitcoinToSatoshis(Double.valueOf(leave))),oddAddress);
+            }
+            // usdt
+            String usdtHex = "6a146f6d6e69" + String.format("%016x", propertyId) + String.format("%016x", amount);
+            //usdt transaction
+            transaction.addOutput(Coin.valueOf(546),new Script(HEX.decode(usdtHex)));
+            //send to address
+            transaction.addOutput(Coin.valueOf(546),receiveAddress);
+            //create usdt utxo data
+            for (UTXO usdtUtxo : usdtUtxos) {
+                TransactionOutPoint transactionOutPoint = new TransactionOutPoint(networkParameters, usdtUtxo.getIndex(), usdtUtxo.getHash());
+                transaction.addSignedInput(transactionOutPoint,usdtUtxo.getScript(),usdtKey,Transaction.SigHash.ALL,true);
+            }
+
+            for (UTXO btcUtxo : btcUtxos) {
+                TransactionOutPoint transactionOutPoint = new TransactionOutPoint(networkParameters, btcUtxo.getIndex(), btcUtxo.getHash());
+                transaction.addSignedInput(transactionOutPoint,btcUtxo.getScript(),btcKey,Transaction.SigHash.ALL,true);
+            }
+            Context.getOrCreate(networkParameters);
+            transaction.getConfidence().setSource(TransactionConfidence.Source.NETWORK);
+            transaction.setPurpose(Transaction.Purpose.USER_PAYMENT);
+            //hash
+            String hash = Hex.toHexString(transaction.bitcoinSerialize());
+            System.out.println(hash);
+
+
+        }
+
+    }
 
 
 

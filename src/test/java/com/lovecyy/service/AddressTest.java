@@ -6,6 +6,7 @@ import com.lovecyy.model.pojo.accounts.P2SHMultiSigAccount;
 import com.lovecyy.utils.AddressUtils;
 import com.lovecyy.utils.BitCoinEnvConfig;
 import com.lovecyy.utils.Converter;
+import com.lovecyy.utils.NumericUtil;
 import org.aspectj.lang.annotation.Before;
 import org.assertj.core.util.Lists;
 import org.bitcoinj.core.ECKey;
